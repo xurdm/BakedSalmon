@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include <xinput.h>
 
 #define internal static
 #define local_persist static
@@ -31,12 +32,55 @@ typedef struct s_win32_window_dimension
 	int Height;
 } win32_window_dimension;
 
+typedef struct s_win32_pixel_color
+{
+	uint8 Blue;
+	uint8 Green;
+	uint8 Red;
+} win32_pixel_color;
+
+/** Avoiding compatibility issues with < Windows Vista, trust me. **/
+// MOTE: XInputGetState
+// define stub for cases where XInputGetState is not available
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE* pState)
+typedef X_INPUT_GET_STATE(x_input_get_state);
+X_INPUT_GET_STATE(XInputGetStateStub)
+{
+	return 0;
+};
+global_variable x_input_get_state *XInputGetState_ = XInputGetStateStub;
+#define XInputGetState XInputGetState_
+
+// MOTE: XInputSetState
+// define stub for cases where XInputSetState is not available
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration)
+typedef X_INPUT_SET_STATE(x_input_set_state);
+X_INPUT_SET_STATE(XInputSetStateStub)
+{
+	return 0;
+};
+global_variable x_input_set_state *XInputSetState_ = XInputSetStateStub;
+#define XInputSetState XInputSetState_
+
+internal void
+Win32LoadXInput(void)
+{
+	// loading XInput 1.3 for compatibility
+	HMODULE hXInputLibrary = LoadLibrary("xinput1_3.dll");
+	if(XInputLibrary)
+	{
+		XInputGetState = GetProcAddress(XInputLibrary, );
+		XInputSetState = GetProcAddress(XInputLibrary, );
+	}
+}
+
 // TODO: Will not work as well in future.
 global_variable BOOL Running;
 global_variable win32_offscreen_buffer GlobalBackbuffer;
 
 
-win32_window_dimension Win32GetWindowDimension(HWND hWindow)
+internal win32_window_dimension 
+Win32GetWindowDimension(HWND hWindow)
 {
 	win32_window_dimension Result;
 
@@ -51,16 +95,21 @@ win32_window_dimension Win32GetWindowDimension(HWND hWindow)
 internal void
 RenderWeirdGradient(win32_offscreen_buffer Buffer, int XOffset, int YOffset)
 {
+	int XThresh = 1;
+	int XCur = 1;
 	uint8 *Row = (uint8*)Buffer.Memory;
-	int min = 8; int Width = Buffer.Width;
+	win32_pixel_color PixelColor;
+
 	for(int Y = 0; Y < Buffer.Height; ++Y)
 	{
 		uint32 *Pixel = (uint32*)Row;
 		for(int X = 0; X < Buffer.Width; ++X)
 		{
-			uint8 Blue = (uint8)(X + XOffset);
-			uint8 Green = (uint8)(X + YOffset);
-
+			//uint8 Blue = (uint8)(X+XOffset);
+			//uint8 Green = (uint8)(X+YOffset);
+			/*uint8 Blue = (uint8)0;
+			uint8 Green = (uint8)0;
+			uint8 Red = (uint8)0;*/
 			/*
 				Memory:    BB GG RR xx   (xx = pad)
 				Register:  xx RR GG BB
@@ -68,18 +117,29 @@ RenderWeirdGradient(win32_offscreen_buffer Buffer, int XOffset, int YOffset)
 				Pixel (32-bit)
 			*/
 
-			*Pixel++ = ((Green << 8) | Blue);
-		}
+			if(XCur < XThresh)
+			{
+				PixelColor.Blue = (uint8)0;
+				PixelColor.Green = (uint8)0;
+				PixelColor.Red = (uint8)0;
+				*Pixel++ = ((PixelColor.Red << 16) | (PixelColor.Green << 8) | PixelColor.Blue);
+			}
+			else
+			{
+				PixelColor.Blue = (uint8)(X+XOffset);
+				PixelColor.Green = (uint8)(Y+YOffset);
+				*Pixel++ = ((PixelColor.Green << 8) | PixelColor.Blue);
+			}
 
-		if(Buffer.Width != 1)
-		{
-			Buffer.Width = Buffer.Width / 2;
-		}
-		else
-		{
-			Buffer.Width = Width;
-		}
+				/**Pixel++ = ((Green << 8) | Blue);
+				XCur = XCur / 2;
 
+				*Pixel++ = ((Red << 16) | (Green << 8) | Blue);
+				XCur = 32;*/
+				XCur++;
+		}
+		XThresh = XThresh == 256 ? 1 : XThresh*2;
+		XCur = XCur > XThresh ? 1 : XCur;
 		Row += Buffer.Pitch;
 	}
 }
@@ -121,13 +181,14 @@ Win32DisplayBuffer(HDC DeviceContext,
 				   win32_offscreen_buffer Buffer, 
 				   LONG X, LONG Y, LONG Width, LONG Height)
 {
+	/// TODO: Aspect ratio correction
 	StretchDIBits(DeviceContext,
 				  /*
 				  X, Y, Width, Height,
 				  X, Y, Width, Height,
 				  */
-				  0, 0, Buffer.Width, Buffer.Height,
 				  0, 0, WindowWidth, WindowHeight,
+				  0, 0, Buffer.Width, Buffer.Height,
 				  Buffer.Memory,
 				  &Buffer.Info,
 				  DIB_RGB_COLORS, SRCCOPY);
@@ -146,8 +207,6 @@ MainWindowCallback(HWND Window,
 	{
 		case WM_SIZE:
 		{
-			win32_window_dimension Dimension = Win32GetWindowDimension(Window);
-			Win32ResizeDIBSection(&GlobalBackbuffer, Dimension.Width, Dimension.Height);
 		} break;
 
 		case WM_CLOSE:
@@ -202,6 +261,9 @@ WinMain(HINSTANCE hInstance,
 {
 	WNDCLASS WindowClass = {0};
 
+	//win32_window_dimension Dimension = Win32GetWindowDimension(Window);
+	Win32ResizeDIBSection(&GlobalBackbuffer, 1280, 720);
+
 	WindowClass.style = CS_OWNDC|CS_HREDRAW|CS_VREDRAW;
 	WindowClass.lpfnWndProc = MainWindowCallback;
 	WindowClass.hInstance = hInstance;
@@ -244,6 +306,36 @@ WinMain(HINSTANCE hInstance,
 					TranslateMessage(&Message);
 					DispatchMessage(&Message);					
 				} 
+
+				// TODO: Pull frequency?
+				for(DWORD ControllerIndex = 0; ControllerIndex < XUSER_MAX_COUNT;
+					++ControllerIndex)
+				{
+					XINPUT_STATE ControllerState;
+					if(XInputGetState(ControllerIndex, &ControllerState) == ERROR_SUCCESS)
+					{
+						//NOTE: plugged in
+						//TODO: check ControllerState.dwPacketNumber frequency
+						XINPUT_GAMEPAD *Pad = &ControllerState.Gamepad;
+
+						BOOL DPadUp 	= (Pad->wButtons & XINPUT_GAMEPAD_DPAD_UP);
+						BOOL DPadRight 	= (Pad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
+						BOOL DPadLeft 	= (Pad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
+						BOOL DPadDown 	= (Pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
+						BOOL Start 		= (Pad->wButtons & XINPUT_GAMEPAD_START);
+						BOOL Back 		= (Pad->wButtons & XINPUT_GAMEPAD_BACK);
+						BOOL LeftThumb  = (Pad->wButtons & XINPUT_GAMEPAD_LEFT_THUMB);
+						BOOL RightThumb = (Pad->wButtons & XINPUT_GAMEPAD_RIGHT_THUMB);
+						BOOL AButton = (Pad->wButtons & XINPUT_GAMEPAD_A);
+						BOOL BButton = (Pad->wButtons & XINPUT_GAMEPAD_B);
+						BOOL XButton = (Pad->wButtons & XINPUT_GAMEPAD_X);
+						BOOL YButton = (Pad->wButtons & XINPUT_GAMEPAD_Y);
+					}
+					else
+					{
+						//unplugged
+					}
+				}
 
 				RenderWeirdGradient(GlobalBackbuffer, ++XOffset, YOffset);
 				HDC DeviceContext = GetDC(hWindow);
