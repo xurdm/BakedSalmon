@@ -39,7 +39,7 @@ typedef struct s_win32_pixel_color
 	uint8 Red;
 } win32_pixel_color;
 
-/** Avoiding compatibility issues with < Windows Vista, trust me. **/
+/** Avoiding compatibility issues with <Windows Vista, trust me. **/
 // MOTE: XInputGetState
 // define stub for cases where XInputGetState is not available
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE* pState)
@@ -66,11 +66,11 @@ internal void
 Win32LoadXInput(void)
 {
 	// loading XInput 1.3 for compatibility
-	HMODULE hXInputLibrary = LoadLibrary("xinput1_3.dll");
+	HMODULE XInputLibrary = LoadLibrary("xinput1_3.dll");
 	if(XInputLibrary)
 	{
-		XInputGetState = GetProcAddress(XInputLibrary, );
-		XInputSetState = GetProcAddress(XInputLibrary, );
+		XInputGetState = (x_input_get_state*)GetProcAddress(XInputLibrary, "XInputGetState");
+		XInputSetState = (x_input_set_state*)GetProcAddress(XInputLibrary, "XInputSetState");
 	}
 }
 
@@ -259,6 +259,8 @@ WinMain(HINSTANCE hInstance,
 		LPSTR lpCmdLine,
 		int nCmdShow)
 {
+	Win32LoadXInput();
+
 	WNDCLASS WindowClass = {0};
 
 	//win32_window_dimension Dimension = Win32GetWindowDimension(Window);
@@ -330,12 +332,31 @@ WinMain(HINSTANCE hInstance,
 						BOOL BButton = (Pad->wButtons & XINPUT_GAMEPAD_B);
 						BOOL XButton = (Pad->wButtons & XINPUT_GAMEPAD_X);
 						BOOL YButton = (Pad->wButtons & XINPUT_GAMEPAD_Y);
+
+						int16 StickX = Pad->sThumbLX;
+						int16 StickY = Pad->sThumbLY;
+
+						//lots of bullshit 
+						XINPUT_VIBRATION Vibration;
+						Vibration.wLeftMotorSpeed = 60000;
+						Vibration.wRightMotorSpeed = 60000;
+						XInputSetState(0, &Vibration);
+
+						if(AButton)
+						{
+							YOffset += 2;
+						}
 					}
 					else
 					{
 						//unplugged
 					}
 				}
+
+				XINPUT_VIBRATION Vibration;
+				Vibration.wLeftMotorSpeed = 60000;
+				Vibration.wRightMotorSpeed = 60000;
+				XInputSetState(0, &Vibration);
 
 				RenderWeirdGradient(GlobalBackbuffer, ++XOffset, YOffset);
 				HDC DeviceContext = GetDC(hWindow);
