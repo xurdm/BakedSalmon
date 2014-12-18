@@ -46,6 +46,11 @@ typedef struct s_win32_pixel_color
 	uint8 Red;
 } win32_pixel_color;
 
+// TODO: Globals for now.
+global_variable BOOL GlobalRunning;
+global_variable win32_offscreen_buffer GlobalBackbuffer;
+global_variable LPDIRECTSOUNDBUFFER GlobalSecondBuffer;
+
 /** support xinput 1.3 **/
 // MOTE: XInputGetState
 // define a stub to handle disconnected controllers instead of crashing
@@ -99,10 +104,6 @@ Win32LoadXInput(void)
 	}
 }
 
-// TODO: Will not work as well in future.
-global_variable BOOL GlobalRunning;
-global_variable win32_offscreen_buffer GlobalBackbuffer;
-
 internal void
 Win32InitDSound(HWND hWindow, int32 SamplesPerSecond, int32 BufferSize)
 {
@@ -124,15 +125,15 @@ Win32InitDSound(HWND hWindow, int32 SamplesPerSecond, int32 BufferSize)
 			WaveFormat.nChannels = 2; // stereo
 			WaveFormat.nSamplesPerSec = SamplesPerSecond;
 			WaveFormat.wBitsPerSample = 16; // 16-bit audio
-			WaveFormat.nBlockAlign = (WaveFormat.nChannels*WaveFormat.wBitsPerSample)/8;
+			WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
 			WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec*WaveFormat.nBlockAlign;
 			WaveFormat.cbSize = 0;
 
 			if(SUCCEEDED(DirectSound->SetCooperativeLevel(hWindow, DSSCL_PRIORITY)))
 			{
-				//BUFFERDESC BufferDescription = {0};
-				//BufferDescription.dwSize = sizeof(BufferDescription);
-				DSBUFFERDESC BufferDescription = {sizeof(BufferDescription)};
+				DSBUFFERDESC BufferDescription = {0};
+				BufferDescription.dwSize = sizeof(BufferDescription);
+				//DSBUFFERDESC BufferDescription = {sizeof(BufferDescription)};
 				BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER; 
 				
 				// NOTE: Create primary buffer
@@ -140,9 +141,11 @@ Win32InitDSound(HWND hWindow, int32 SamplesPerSecond, int32 BufferSize)
 				LPDIRECTSOUNDBUFFER PrimaryBuffer;
 				if(SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0)))
 				{
-					if(SUCCEEDED(PrimaryBuffer->SetFormat(&WaveFormat)))
+					HRESULT ErrorCode;
+					if(SUCCEEDED(ErrorCode = PrimaryBuffer->SetFormat(&WaveFormat)))
 					{
 						// NOTE: Format successfully set
+						OutputDebugStringA("Primary buffer format set successfully");
 					}
 					else
 					{
@@ -162,14 +165,17 @@ Win32InitDSound(HWND hWindow, int32 SamplesPerSecond, int32 BufferSize)
 
 			// NOTE: Create a secondary buffer
 			// TODO: DSBCAPS_GETCURRENTPOSITION2
-			DSBUFFERDESC BufferDescription = {sizeof(BufferDescription)};
-			BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+			//DSBUFFERDESC BufferDescription = {sizeof(BufferDescription)};
+			DSBUFFERDESC BufferDescription = {0};
+			BufferDescription.dwSize = sizeof(BufferDescription);
+			BufferDescription.dwFlags = 8;
 			BufferDescription.dwBufferBytes = BufferSize;
 			BufferDescription.lpwfxFormat = &WaveFormat;
-			LPDIRECTSOUNDBUFFER SecondBuffer;
-			if(SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &SecondBuffer, 0 )))
+			HRESULT ErrorCode;
+			if(SUCCEEDED(ErrorCode = DirectSound->CreateSoundBuffer(&BufferDescription, &GlobalSecondBuffer, 0 )))
 			{
 				// NOTE: Start playing
+				OutputDebugStringA("Secondary buffer created successfully");
 			}
 			
 
@@ -448,10 +454,22 @@ WinMain(HINSTANCE hInstance,
 
 		if(hWindow)
 		{
+			// graphics test
 			int XOffset = 0;
 			int YOffset = 0;
 
-			Win32InitDSound(hWindow, 48000, 48000 * sizeof(int16) * 2);
+			// sound test
+			int SamplesPerSecond = 48000;	// 48 KHz
+			int Frequency = 256; 			// 256 Hz
+			int16 ToneVolume = 1000;
+			int SquareWavePeriod = SamplesPerSecond/Frequency;
+			int HalfSquareWavePeriod = SquareWavePeriod / 2;
+			int BytesPerSample = sizeof(int16) * 2;
+			uint32 RunningSampleIndex = 0;
+			int SecondBufferSize = SamplesPerSecond * BytesPerSample;
+
+			Win32InitDSound(hWindow, SamplesPerSecond, SecondBufferSize);
+			GlobalSecondBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
 			GlobalRunning = TRUE;
 			while(GlobalRunning)
@@ -495,7 +513,7 @@ WinMain(HINSTANCE hInstance,
 						int16 StickX = Pad->sThumbLX;
 						int16 StickY = Pad->sThumbLY;
 
-						//lots of bullshit 
+						// lots of bullshit 
 						XINPUT_VIBRATION Vibration;
 						Vibration.wLeftMotorSpeed = 60000;
 						Vibration.wRightMotorSpeed = 60000;
@@ -508,7 +526,7 @@ WinMain(HINSTANCE hInstance,
 					}
 					else
 					{
-						//unplugged
+						// unplugged
 					}
 				}
 
@@ -519,6 +537,61 @@ WinMain(HINSTANCE hInstance,
 
 				RenderWeirdGradient(&GlobalBackbuffer, ++XOffset, YOffset);
 				HDC DeviceContext = GetDC(hWindow);
+
+				// NOTE: DirectSound output test
+				DWORD PlayCursor;
+				DWORD WriteCursor;
+				if(SUCCEEDED(GlobalSecondBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor)))
+				{
+					DWORD ByteToLock = RunningSampleIndex * BytesPerSample % SecondBufferSize;
+					DWORD BytesToWrite;
+					if(ByteToLock > PlayCursor)
+					{
+						BytesToWrite = SecondBufferSize - ByteToLock;
+						BytesToWrite += PlayCursor;
+					}
+					else
+					{
+						BytesToWrite = PlayCursor - ByteToLock;
+					}
+					
+					// my attempt to illustrate the buffer
+					// [int16 int16][int16 int16] . . .
+					// [LEFT  RIGHT][LEFT  RIGHT] . . . 
+					VOID *Region1;
+					DWORD Region1Size;
+					VOID *Region2;
+					DWORD Region2Size;
+
+					if(SUCCEEDED(GlobalSecondBuffer->Lock(ByteToLock, BytesToWrite,
+											&Region1, &Region1Size,
+											&Region2, &Region2Size,
+											0)))
+					{
+						// TODO: validate sizes
+						DWORD Region1SampleCount = Region1Size / BytesPerSample;						
+						int16 *SampleOut = (int16*)Region1;
+						for(DWORD SampleIndex = 0; SampleIndex < Region1SampleCount; ++SampleIndex)
+						{
+							// if we are on an even half period, then play an audible high
+							// otherwise, play an audible low
+							int16 SampleValue = ((RunningSampleIndex++ / HalfSquareWavePeriod) % 2) ? ToneVolume : -ToneVolume;
+							*SampleOut++ = SampleValue; // left channel
+							*SampleOut++ = SampleValue*2; // right channel
+						}
+						
+						DWORD Region2SampleCount = Region2Size/BytesPerSample;
+						SampleOut = (int16*)Region2;
+						for(DWORD SampleIndex = 0; SampleIndex < Region2SampleCount; ++SampleIndex)
+						{
+							int16 SampleValue = ((RunningSampleIndex++ / HalfSquareWavePeriod) % 2) ? ToneVolume : -ToneVolume;
+							*SampleOut++ = SampleValue; // left channel
+							*SampleOut++ = SampleValue*2; // right channel
+						}
+
+						GlobalSecondBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
+					}
+				}
 
 				win32_window_dimension Dimension = Win32GetWindowDimension(hWindow);
 				Win32DisplayBuffer(&GlobalBackbuffer, DeviceContext, Dimension.Width, Dimension.Height);
